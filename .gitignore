@@ -389,3 +389,6 @@ dist/
 
 # Node Modules (혹시 모를 경로 대비)
 frontend/node_modules/
+
+# Claude Code 설정 파일 (개인 정보 포함)
+CLAUDE.md
