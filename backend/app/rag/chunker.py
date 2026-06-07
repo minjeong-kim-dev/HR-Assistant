@@ -37,14 +37,16 @@ def chunk_documents(documents: list[dict], chunk_size: int = 500, chunk_overlap:
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", ".", " ", ""],  # 분할 우선순위
+        # 분할 우선순위 문단 -> 줄 -> 문장 -> 단어 -> 글자
+        separators=["\n\n", "\n", ".", " ", ""],  
     )
 
     chunks = []
     for doc in documents:
         split_texts = splitter.split_text(doc["text"])
         for i, chunk_text in enumerate(split_texts):
-            if chunk_text.strip():  # 빈 청크 제외
+            # 빈 청크(빈 문자열) 제외
+            if chunk_text.strip():  
                 chunks.append({
                     "source": doc["source"],
                     "chunk_index": i,
@@ -53,7 +55,7 @@ def chunk_documents(documents: list[dict], chunk_size: int = 500, chunk_overlap:
 
     return chunks
 
-
+# 함수 호출, 결과 저장/출력하는 코드
 if __name__ == "__main__":
     """
     청킹된 데이터를 문서별로 분리해서 JSON 파일로 저장
