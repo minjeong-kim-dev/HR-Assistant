@@ -5,7 +5,11 @@ Create  : 2026-06-06
 Description :
 
 Modification History:
-- 2026-06-03 (김민정) : 
+- 2026-06-03 (김민정) : 최초 작성. Docling 기반 PDF→Markdown 변환 구현
+- 2026-06-06 (김민정) : PyMuPDF 직접 텍스트 추출 방식으로 전환
+                        Docling 제거, has_broken_korean() 으로 인코딩 감지
+                        인코딩 깨진 PDF는 EasyOCR fallback 처리
+                        11개 PDF → data/extracted/*.txt 추출 완료
 """
 
 import fitz     # PyMuPDF 라이브러리 호출
@@ -13,18 +17,7 @@ from pathlib import Path
 
 
 def has_broken_korean(pdf_path: Path, sample_pages: int = 5) -> bool:
-    """
-    PDF의 텍스트 인코딩이 깨져 있는지 확인.
-
-    핵심 아이디어:
-    한국어 문서에서 비ASCII 문자의 대부분은 한글 음절(가~힣)이어야 한다.
-    비ASCII 문자는 많은데 한글 음절 비율이 5% 미만인 페이지가 있으면 인코딩이 깨진 것.
-
-    이 방식의 장점:
-    - ○, ※, △, → 같은 한국 문서 특수기호는 "비한글"이지만 개수가 적어 false positive 방지
-    - 깨진 페이지는 아랍/키릴/그리스 등 엉뚱한 유니코드가 가득해서 확실히 걸림
-    - 표지 한 장만 깨진 PDF도 즉시 감지 (페이지별 검사)
-    """
+    """PDF의 텍스트 인코딩이 깨져 있는지 확인. 한글 음절 비율로 판단."""
     doc = fitz.open(pdf_path)
     total_pages = min(sample_pages, len(doc))
 
@@ -63,13 +56,7 @@ def has_broken_korean(pdf_path: Path, sample_pages: int = 5) -> bool:
 
 
 def convert_with_direct_ocr(pdf_path: Path, output_file: Path):
-    """
-    PyMuPDF로 페이지를 이미지로 렌더링 후 EasyOCR로 직접 텍스트 추출.
-
-    Docling의 OCR 파이프라인은 내부적으로 레이아웃 AI 모델(RT-DETR v2)까지
-    실행해서 메모리 부족(OOM)이 발생하므로, 이 함수에서는 Docling을 쓰지 않음.
-    페이지를 한 장씩 처리해서 메모리를 최소화.
-    """
+    """인코딩이 깨진 PDF를 페이지 이미지로 렌더링 후 EasyOCR로 텍스트 추출."""
     import numpy as np
     import easyocr
 
@@ -102,13 +89,7 @@ def convert_with_direct_ocr(pdf_path: Path, output_file: Path):
 
 
 def extract_text(pdf_path: Path) -> str:
-    """
-    PyMuPDF로 PDF에서 텍스트 추출 (정상 인코딩 PDF 전용).
-
-    get_text()는 PDF 내부의 텍스트 레이어를 직접 읽는다.
-    ToUnicode 테이블이 정상이면 한글이 그대로 추출됨.
-    페이지 구분자를 넣어두면 나중에 청킹할 때 페이지 경계를 활용할 수 있다.
-    """
+    """PyMuPDF로 PDF 텍스트 직접 추출. 페이지 사이는 빈 줄 두 개로 구분."""
     doc = fitz.open(pdf_path)
     pages = []
 
@@ -123,12 +104,7 @@ def extract_text(pdf_path: Path) -> str:
 
 
 def extract_all_pdfs(pdf_dir: Path, output_dir: Path):
-    """
-    data/raw 의 모든 PDF를 텍스트로 추출해 data/extracted 에 저장.
-
-    정상 PDF → extract_text() (빠름)
-    깨진 PDF → convert_with_direct_ocr() (EasyOCR, 느림)
-    """
+    """data/raw 의 모든 PDF를 data/extracted 에 txt로 저장. 깨진 PDF는 OCR 처리."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for pdf_file in sorted(pdf_dir.glob("*.pdf")):
