@@ -3,6 +3,8 @@ File    : backend/app/rag/parser.py
 Author  : 김민정
 Create  : 2026-06-06
 Description :
+    PDF 파일에서 텍스트를 추출하여 data/extracted/*.txt 로 저장.
+    한글 인코딩이 깨진 PDF는 EasyOCR로 fallback 처리.
 
 Modification History:
 - 2026-06-03 (김민정) : 최초 작성. Docling 기반 PDF→Markdown 변환 구현

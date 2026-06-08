@@ -1,5 +1,5 @@
 """
-File    : backend/app/rag/parser.py
+File    : backend/app/rag/parser_v1.py
 Author  : 김민정
 Create  : 2026-06-03
 Description :

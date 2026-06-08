@@ -50,3 +50,41 @@
 ### 결과
 - 11개 문서 → 1,460개 청크
 - 문서별로 data/chunks/*.json 저장
+
+---
+
+## Day 04 · 임베딩 + ChromaDB 저장 (embedder.py)
+
+### 임베딩이란?
+- 텍스트를 숫자 벡터로 변환하는 것
+- 모델에 저장된 문장이 아니라 "변환 규칙"이 저장되어 있음 → 처음 보는 문장도 즉시 변환 가능
+- 의미가 비슷한 문장 → 비슷한 벡터 생성 → 거리 계산으로 검색 가능
+
+### 모델 선택 이유
+- `snunlp/KR-SBERT-V40K-klueNLI-augSTS`: 한국어 특화 임베딩 모델
+- 벡터 크기: 768차원
+
+### ChromaDB 구조
+- 컬렉션 = 엑셀의 시트 1개
+- 한 컬렉션에 다 넣는 이유: RAG에서 검색할 때 모든 문서를 동시에 비교해야 하기 때문
+- 컬렉션을 나누는 경우: 완전히 다른 서비스 (HR문서 / 법무문서 / 재무문서) 를 따로 관리할 때
+- 저장 항목: id(고유값) + documents(원본텍스트) + embeddings(벡터) + metadatas(출처)
+
+### 트러블슈팅
+- 검색 테스트 시 `collection.query(query_texts=["질문"])` 사용
+- ChromaDB가 질문을 자기 내장 모델(384차원)로 임베딩함
+- 저장된 벡터는 KR-SBERT(768차원) → 차원 불일치로 에러 발생
+- 해결: 질문도 KR-SBERT로 직접 임베딩한 뒤 `query_embeddings=[벡터]` 로 넘김
+  ```python
+  # 에러 난 방식
+  collection.query(query_texts=["연차휴가 며칠 받아요?"])
+
+  # 수정한 방식
+  query_embedding = model.encode("연차휴가 며칠 받아요?").tolist()
+  collection.query(query_embeddings=[query_embedding])
+  ```
+
+### 결과
+- 1,460개 청크 → 768차원 벡터로 변환
+- data/vector_store/ 에 ChromaDB 저장 완료
+- "연차휴가 며칠 받아요?" 검색 테스트 성공
