@@ -413,6 +413,73 @@ state = {
 
 ---
 
+## Day 16 추가 · LangSmith 연동
+
+### LangSmith란?
+LangGraph/LangChain 실행 흐름을 웹 대시보드에서 시각적으로 추적하는 모니터링 도구.
+코드 수정 없이 `.env`에 환경변수 추가만으로 자동 연동됨. 무료 플랜 사용.
+
+### 설정 방법 (.env에 추가)
+```
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=발급받은_키
+LANGCHAIN_PROJECT=hr-assistant
+```
+
+### LangSmith에서 확인할 수 있는 것
+- **실행 흐름**: LangGraph → router → route_condition → rag_node or llm_node 순서 트리로 표시
+- **각 노드 입출력**: 어떤 히스토리가 전달됐는지, GPT가 뭘 받고 뭘 반환했는지
+- **지연 시간**: 노드별 처리 시간 (router 1.87s, llm_node 2.00s 등)
+- **토큰 수 / 비용**: 질문당 실제 사용 비용 확인 가능
+
+### 실제 확인 사례
+- "안녕" → `llm_node` (2.9초, $0.0000369)
+- "나 입사 3달차인데 연차 없겠지?" → `rag_node` (13.7초, $0.00022755) — sources: 근로시간_연차유급휴가_행정해석, 육아휴직_사용안내서_2024
+- "개근 안됐는데...?" → `llm_node` — 애매한 표현으로 router가 HR 관련 아니라고 판단한 케이스 (라우팅 한계 사례)
+
+### 트러블슈팅
+- RAGAS 설치 시 langchain-community가 langchain-core를 0.2.43으로 다운그레이드
+- langgraph 1.2.5는 langchain-core >= 0.3.x 필요 → `TypeError: Reviver.__init__() got an unexpected keyword argument 'allowed_objects'` 에러 발생
+- 해결: langchain 전체 패키지 최신 버전으로 업그레이드
+
+---
+
+## Day 16 · RAGAS 평가
+
+### RAGAS란?
+RAG 파이프라인 품질을 자동으로 측정하는 평가 프레임워크. 내부적으로 GPT를 호출해서 각 지표를 측정함.
+
+### 평가 데이터셋
+- `data/ragas_dataset.json` 에 16개 Q&A 작성 (연차휴가 4 / 육아휴직 4 / 연말정산 3 / 근로시간 4 / 출산휴가 1)
+- 각 항목: 질문 + ground_truth(정답)
+- 실행 시 RAG가 자동으로 answer + contexts 생성 → RAGAS가 점수 측정
+
+### 1차 평가 결과 (기본 설정: 청크 3개)
+| 지표 | 점수 | 의미 |
+|---|---|---|
+| Context Precision | 0.9635 | 검색 잘 됨 ✅ |
+| Context Recall | 0.4688 | 정답 내용의 47%만 검색됨 |
+| Faithfulness | 0.2437 | LLM이 문서 외 내용 추가 중 |
+| Answer Relevancy | 0.0904 | 한국어 처리 한계로 신뢰 불가 |
+
+### 개선 시도 및 결과 (청크 5개 + 프롬프트 강화)
+- `MAX_SEARCH_RESULTS 3 → 5` 로 변경
+- 프롬프트: "문서에 없는 내용은 답하지 마세요" → "반드시 문서에 명시된 내용만 답하고 절대 추가하지 마세요"
+
+| 지표 | 1차 | 2차 | 변화 |
+|---|---|---|---|
+| Context Precision | 0.9635 | 0.9677 | ↑ 유지 |
+| Context Recall | 0.4688 | 0.4531 | ↓ 소폭 하락 |
+| Faithfulness | 0.2437 | 0.3385 | ↑ 개선 |
+
+### 결론 및 판단
+- **프롬프트 강화** → Faithfulness 개선 효과 있음 (0.24 → 0.34)
+- **청크 수 증가** → Context Recall 오히려 낮아짐. 4~5번째 청크가 관련도가 낮아서 노이즈가 됨 → 3으로 원복
+- **Answer Relevancy** → RAGAS 0.1.x가 한국어 처리 시 영어로 변환하면서 수치 왜곡. 신뢰 불가
+- **RAGAS 비용** → 내부적으로 GPT 호출하므로 실행마다 API 비용 발생. 반복 실행 주의
+
+---
+
 ## 트러블슈팅 모음 (README 작성용)
 
 ### 1. Docling OOM → PyMuPDF로 전환
