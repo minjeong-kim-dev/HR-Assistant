@@ -253,3 +253,31 @@ state = {
   → `route: llm` → LLM 직접 답변, sources 없음 ✅
 - "나는 아직 입사한지 두달밖에 안되었는데, 연차 없겠지?"
   → `route: rag` → 문서 검색 후 정확한 답변 + 출처 3개 반환 ✅
+
+---
+
+## Day 11 · SQL DB 설계 + 대화 히스토리 저장 (database.py)
+
+### DB 구조
+- ChromaDB (`chroma.sqlite3`): 청크 벡터 저장 → 유사도 검색 전용
+- SQLite (`chat_history.db`): 대화 내역 저장 → 히스토리 조회 전용
+- 역할이 달라서 별도 DB로 분리
+
+### chat_history 테이블 컬럼
+| 컬럼 | 타입 | 설명 |
+|------|------|------|
+| id | Integer | 자동 증가 고유 ID |
+| question | Text | 사용자 질문 |
+| answer | Text | AI 답변 |
+| sources | String | 출처 (콤마로 구분, llm이면 빈 값) |
+| route | String | rag or llm |
+| created_at | DateTime | 저장 시각 |
+
+### 사용 라이브러리
+- SQLAlchemy: 파이썬 코드로 DB 조작 (SQL 직접 안 써도 됨)
+- aiosqlite: FastAPI 비동기 환경과 SQLite 호환
+
+### 저장 흐름
+1. `/chat` 요청 → LangGraph로 답변 생성
+2. 질문 + 답변 + 출처 + 경로를 `chat_history` 테이블에 저장
+3. DBeaver로 저장 확인 완료
