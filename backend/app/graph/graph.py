@@ -9,6 +9,7 @@ Description :
 Modification History:
 - 2026-06-15 (김민정): 최초 작성.
 - 2026-06-15 (김민정): 대화 히스토리 전달 추가.
+- 2026-06-15 (김민정): 중복 히스토리 변환 코드 _build_history_messages() 함수로 분리.
 """
 
 import os
@@ -18,6 +19,7 @@ from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from backend.app.rag.retriever import search
+from backend.app.logger import logger
 
 load_dotenv()
 
@@ -33,16 +35,22 @@ class GraphState(TypedDict):
     history: list[dict]
 
 
+def _build_history_messages(history: list[dict]) -> list:
+    """대화 히스토리(dict 리스트)를 LangChain 메시지 객체 리스트로 변환."""
+    messages = []
+    for msg in history:
+        if msg["role"] == "user":
+            messages.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            messages.append(SystemMessage(content=msg["content"]))
+    return messages
+
+
 def router(state: GraphState) -> GraphState:
     """
     사용자의 질문을 보고 'rag' 또는 'llm' 경로를 결정.
     """
-    history_messages = []
-    for msg in state.get("history", []):
-        if msg["role"] == "user":
-            history_messages.append(HumanMessage(content=msg["content"]))
-        elif msg["role"] == "assistant":
-            history_messages.append(SystemMessage(content=msg["content"]))
+    history_messages = _build_history_messages(state.get("history", []))
 
     messages = [
         SystemMessage(content="""
@@ -64,9 +72,10 @@ def router(state: GraphState) -> GraphState:
     route = response.content.strip().lower()
 
     if route not in ("rag", "llm"):
-        # rag/llm이 아닌 겂을 반환할 경우 llm으로 강제 변환
+        # rag/llm이 아닌 값을 반환할 경우 llm으로 강제 변환
         route = "llm"
 
+    logger.info(f"[ROUTER] route={route} | question={state['question'][:50]}")
     return {"route": route}
 
 
@@ -79,20 +88,13 @@ def rag_node(state: GraphState) -> GraphState:
     context = "\n\n".join([c["text"] for c in chunks])
     sources = list(set([c["source"] for c in chunks]))
 
-    # 이전 대화 히스토리를 메시지로 변환
-    history_messages = []
-    for msg in state.get("history", []):
-        if msg["role"] == "user":
-            history_messages.append(HumanMessage(content=msg["content"]))
-        elif msg["role"] == "assistant":
-            history_messages.append(SystemMessage(content=msg["content"]))
+    history_messages = _build_history_messages(state.get("history", []))
 
     messages = [
         SystemMessage(content=f"""
             아래 문서를 참고해서 질문에 답하세요.
             문서에 없는 내용은 답하지 마세요.
             질문이 모호하거나 "처음인데", "잘 모르는데" 같은 표현이 있으면 관련 내용을 순서대로 설명해주세요.
-
 
             [참고 문서]
             {context}
@@ -101,7 +103,8 @@ def rag_node(state: GraphState) -> GraphState:
         HumanMessage(content=state["question"]),
     ]
     response = llm.invoke(messages)
-    
+
+    logger.info(f"[RAG] sources={sources} | answer_len={len(response.content)}")
     return {"answer": response.content, "sources": sources}
 
 
@@ -109,14 +112,8 @@ def llm_node(state: GraphState) -> GraphState:
     """
     문서 없이 LLM이 직접 답변.
     """
+    history_messages = _build_history_messages(state.get("history", []))
 
-    history_messages = []
-    for msg in state.get("history", []):
-        if msg["role"] == "user":
-            history_messages.append(HumanMessage(content=msg["content"]))
-        elif msg["role"] == "assistant":
-            history_messages.append(SystemMessage(content=msg["content"]))
-            
     messages = [
         SystemMessage(content="당신은 친절한 HR 업무 도우미입니다."),
         *history_messages,
@@ -124,6 +121,7 @@ def llm_node(state: GraphState) -> GraphState:
     ]
     response = llm.invoke(messages)
 
+    logger.info(f"[LLM] answer_len={len(response.content)}")
     return {"answer": response.content, "sources": []}
 
 

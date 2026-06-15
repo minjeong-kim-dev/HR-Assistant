@@ -365,6 +365,54 @@ state = {
 
 ---
 
+## Day 15 · 코드 리팩토링 + 로깅 추가
+
+### 코드 리팩토링
+
+**graph.py — 중복 코드 제거**
+- `router`, `rag_node`, `llm_node` 세 함수가 히스토리 변환 코드를 똑같이 반복하고 있었음
+- `_build_history_messages()` 함수로 분리해서 한 곳에서 관리
+- 왜 필요한가: 나중에 메시지 변환 방식을 바꿀 때 한 곳만 수정하면 됨
+
+**retriever.py — 하드코딩 상수 분리**
+- `n_results=3` → `MAX_SEARCH_RESULTS = 3` 상수로 분리
+- 왜 필요한가: 숫자만 보면 왜 3인지 모름. 이름이 있어야 의도가 보임
+
+**chat.py — 에러 핸들링 추가**
+- LangGraph 실행 실패 시 → `"답변 생성 중 오류가 발생했습니다"` 메시지 반환
+- DB 저장 실패 시 → `rollback()` 후 오류 메시지 반환
+- `finally`로 DB 연결이 항상 닫히도록 보장
+- 왜 필요한가: 에러 처리 없으면 서버가 500 에러만 뱉고 원인을 알 수 없음
+
+### 로깅 추가 (logger.py)
+
+**왜 로깅이 필요한가**
+- "이 질문이 왜 llm으로 갔지?" 같은 상황을 나중에 파악하려면 기록이 있어야 함
+- 포트폴리오 발표 시 "모니터링은 어떻게 했나요?" 질문에 답할 수 있음
+
+**구현 방식**
+- `backend/app/logger.py` 생성: Python 내장 `logging` 모듈 사용
+- 콘솔 + `logs/app.log` 파일 두 곳에 동시 기록
+- 서버 재시작 시 핸들러 중복 방지 (`if logger.handlers` 체크)
+
+**로그 출력 예시**
+```
+# RAG 경로
+2026-06-15 14:23:01 | INFO | [ROUTER] route=rag | question=연차휴가는 며칠 받을 수 있나요?
+2026-06-15 14:23:03 | INFO | [RAG] sources=['연차휴가.txt'] | answer_len=312
+
+# LLM 경로
+2026-06-15 14:23:05 | INFO | [ROUTER] route=llm | question=오늘 점심 뭐 먹지?
+2026-06-15 14:23:06 | INFO | [LLM] answer_len=150
+```
+
+**로깅 한계 및 판단**
+- question + route는 이미 SQLite DB(chat_history 테이블)에 저장되고 있음
+- 따라서 logs/app.log 파일 자체는 DB와 중복
+- DB에 이미 저장되므로 로그 파일은 실시간 콘솔 확인 용도로만 활용
+
+---
+
 ## 트러블슈팅 모음 (README 작성용)
 
 ### 1. Docling OOM → PyMuPDF로 전환

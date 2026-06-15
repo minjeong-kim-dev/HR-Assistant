@@ -8,6 +8,7 @@ Description :
 
 Modification History:
 - 2026-06-08 (김민정): 최초 작성.
+- 2026-06-15 (김민정): MAX_SEARCH_RESULTS 상수 분리.
 """
 from sentence_transformers import SentenceTransformer
 import chromadb
@@ -15,6 +16,7 @@ import chromadb
 MODEL_NAME = "snunlp/KR-SBERT-V40K-klueNLI-augSTS"
 DB_PATH = "data/vector_store"
 COLLECTION_NAME = "hr_docs"
+MAX_SEARCH_RESULTS = 3  # 질문당 참고할 청크 수 (너무 많으면 컨텍스트 초과, 너무 적으면 답변 부족)
 
 
 # 모델과 컬렉션을 모듈 로드 시 한 번만 초기화
@@ -33,7 +35,7 @@ def get_retriever():
     return _model, _collection
 
 
-def search(query: str, n_results: int = 3) -> list[dict]:
+def search(query: str, n_results: int = MAX_SEARCH_RESULTS) -> list[dict]:
     """
     질문과 유사한 청크를 ChromaDB에서 검색해서 반환.
     """
