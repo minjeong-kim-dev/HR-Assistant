@@ -331,3 +331,84 @@ state = {
 ### 테스트 결과
 - "육아휴직 하고싶은데 어떻게 해?" → 문서 기반 답변 + 출처 표시 ✅
 - 날짜/날씨 질문 → LLM이 실시간 정보 없다고 솔직하게 답변 ✅
+
+---
+
+## Day 14 · 프롬프트 튜닝 + 대화 히스토리 전달
+
+### 개선한 것
+
+**1. 라우터 프롬프트 개선**
+- 기존: HR 키워드 나열만으로 분류
+- 변경: 이전 대화 히스토리를 라우터에도 전달
+- 효과: "전체적으로 알려줘" 같은 모호한 질문도 이전 맥락(연말정산) 보고 rag로 분류
+
+**2. 대화 히스토리 전달**
+- frontend → API → graph 순으로 히스토리 전달
+- router / rag_node / llm_node 모두 히스토리 참고
+- 효과: 연속 대화에서 맥락 유지
+
+### 트러블슈팅
+- `history_messages` 를 `*history_messages` 대신 그냥 넣어서 리스트 안에 리스트가 됨
+- LangChain이 메시지 변환 시 에러 발생
+- 해결: `*history_messages` 로 언패킹해서 넣어야 함
+
+### 테스트 결과
+- "연말정산" → rag, 문서 기반 답변 ✅
+- "전체적으로 알려줘" (이전 대화: 연말정산) → rag, 맥락 유지 ✅
+- 출처 3개 문서에서 반환 ✅
+
+### RAG 한계 발견 (README 트러블슈팅에 기록 예정)
+- "전체적으로 알려줘" 같은 개요 요청은 RAG보다 LLM 직접 답변이 더 풍부함
+- RAG는 청크 3개만 참고하기 때문에 개요/전반 설명엔 한계가 있음
+- 특정 사실 질문 → RAG 유리 / 개요 설명 → LLM 유리
+
+---
+
+## 트러블슈팅 모음 (README 작성용)
+
+### 1. Docling OOM → PyMuPDF로 전환
+- **문제**: PDF → Markdown 변환 라이브러리 Docling 사용 중 OOM(메모리 부족) 에러 발생
+- **원인**: Docling이 내부적으로 표 구조 감지 AI 모델(TableFormer, RT-DETR v2)을 실행하는데, 이 모델이 RAM을 과도하게 사용
+- **해결**: 문서가 텍스트 중심임을 파악 → PyMuPDF `get_text()` 로 텍스트만 직접 추출하는 방식으로 전환
+- **결과**: 메모리 문제 해결, 처리 속도 대폭 향상 (수분 → 수초)
+
+---
+
+### 2. 한글 PDF 인코딩 깨짐 → EasyOCR fallback
+- **문제**: 일부 PDF에서 텍스트 추출 시 한글이 아랍/키릴 문자로 깨져서 출력됨
+- **원인**: 해당 PDF의 폰트에 ToUnicode 테이블이 없어서 PyMuPDF가 문자를 올바르게 디코딩하지 못함
+- **해결**:
+  1. 한글 음절(가~힣, 0xAC00~0xD7A3) 비율로 깨진 PDF 자동 감지 (`has_broken_korean()`)
+  2. 깨진 PDF는 PyMuPDF로 페이지를 이미지로 렌더링 후 EasyOCR로 텍스트 추출
+- **결과**: 11개 PDF 중 2개 OCR 처리 완료, 전체 텍스트 정상 추출
+
+---
+
+### 3. ChromaDB 벡터 차원 불일치 에러
+- **문제**: ChromaDB 검색 시 `InvalidArgumentError: Collection expecting embedding with dimension of 768, got 384` 에러 발생
+- **원인**: 저장 시 KR-SBERT(768차원)로 임베딩했는데, 검색 시 `query_texts` 를 쓰면 ChromaDB가 자체 내장 모델(384차원)로 임베딩해버림 → 차원 불일치
+- **해결**: `query_texts` 대신 `query_embeddings` 사용. 질문도 KR-SBERT로 직접 임베딩해서 전달
+- **결과**: 동일 모델로 저장/검색하여 차원 일치, 검색 정상 동작
+
+---
+
+### 4. LangChain 메시지 리스트 중첩 에러
+- **문제**: 대화 히스토리 추가 후 `NotImplementedError: Message as a sequence must be (role string, template)` 에러 발생
+- **원인**: 메시지 리스트 안에 `history_messages` 를 통째로 넣어서 리스트 안에 리스트가 중첩됨
+  ```python
+  # 잘못된 방식
+  messages = [SystemMessage(...), history_messages, HumanMessage(...)]
+  # 올바른 방식
+  messages = [SystemMessage(...), *history_messages, HumanMessage(...)]
+  ```
+- **해결**: `*history_messages` 로 언패킹해서 리스트 항목들을 개별적으로 삽입
+- **결과**: 히스토리 메시지 정상 전달, 대화 맥락 유지
+
+---
+
+### 5. RAG의 개요 질문 한계
+- **문제**: "전체적으로 알려줘" 같은 개요 요청 시 RAG 답변보다 LLM 직접 답변이 더 풍부함
+- **원인**: RAG는 유사도 검색으로 찾은 청크 3개만 참고하기 때문에 전체 개요를 설명하기엔 컨텍스트가 부족함
+- **해결**: 현재는 미해결. 라우터가 맥락상 HR 관련 질문으로 판단하면 rag로 보냄
+- **개선 방향**: 질문 유형(사실 질문 vs 개요 요청)을 추가로 분류하거나, 청크 수를 늘려 더 많은 컨텍스트 제공 고려

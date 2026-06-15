@@ -8,6 +8,7 @@ Description :
 
 Modification History:
 - 2026-06-15 (김민정): 최초 작성.
+- 2026-06-15 (김민정): 대화 히스토리 전달 추가.
 """
 
 import os
@@ -29,20 +30,34 @@ class GraphState(TypedDict):
     route: str
     answer: str
     sources: list[str]
+    history: list[dict]
 
 
 def router(state: GraphState) -> GraphState:
     """
     사용자의 질문을 보고 'rag' 또는 'llm' 경로를 결정.
     """
+    history_messages = []
+    for msg in state.get("history", []):
+        if msg["role"] == "user":
+            history_messages.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            history_messages.append(SystemMessage(content=msg["content"]))
 
     messages = [
         SystemMessage(content="""
             당신은 질문을 분류하는 라우터입니다.
-            질문이 연차휴가, 육아휴직, 연말정산, 근로시간 등 HR/인사 문서와 관련된 경우 'rag'를 반환하세요.
-            그 외 일반적인 질문은 'llm'을 반환하세요.
+            아래 주제와 조금이라도 관련이 있으면 'rag'를 반환하세요.
+            이전 대화 맥락을 고려해서 판단하세요.
+            - 연차휴가, 연차, 휴가, 휴일
+            - 육아휴직, 출산휴가, 육아
+            - 연말정산, 세금, 공제, 환급
+            - 근로시간, 주휴수당, 초과근무
+
+            위 주제와 전혀 관련 없는 일상 질문은 'llm'을 반환하세요.
             반드시 'rag' 또는 'llm' 중 하나만 반환하세요.
         """),
+        *history_messages,
         HumanMessage(content=state["question"]),
     ]
     response = llm.invoke(messages)
@@ -64,14 +79,25 @@ def rag_node(state: GraphState) -> GraphState:
     context = "\n\n".join([c["text"] for c in chunks])
     sources = list(set([c["source"] for c in chunks]))
 
+    # 이전 대화 히스토리를 메시지로 변환
+    history_messages = []
+    for msg in state.get("history", []):
+        if msg["role"] == "user":
+            history_messages.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            history_messages.append(SystemMessage(content=msg["content"]))
+
     messages = [
         SystemMessage(content=f"""
             아래 문서를 참고해서 질문에 답하세요.
             문서에 없는 내용은 답하지 마세요.
+            질문이 모호하거나 "처음인데", "잘 모르는데" 같은 표현이 있으면 관련 내용을 순서대로 설명해주세요.
+
 
             [참고 문서]
             {context}
         """),
+        *history_messages,
         HumanMessage(content=state["question"]),
     ]
     response = llm.invoke(messages)
@@ -83,8 +109,17 @@ def llm_node(state: GraphState) -> GraphState:
     """
     문서 없이 LLM이 직접 답변.
     """
+
+    history_messages = []
+    for msg in state.get("history", []):
+        if msg["role"] == "user":
+            history_messages.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            history_messages.append(SystemMessage(content=msg["content"]))
+            
     messages = [
         SystemMessage(content="당신은 친절한 HR 업무 도우미입니다."),
+        *history_messages,
         HumanMessage(content=state["question"]),
     ]
     response = llm.invoke(messages)

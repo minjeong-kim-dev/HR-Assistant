@@ -7,6 +7,7 @@ Description :
 
 Modification History:
 - 2026-06-15 (김민정): 최초 작성.
+- 2026-06-15 (김민정): 대화 히스토리 전달 추가.
 """
 
 import streamlit as st
@@ -40,7 +41,10 @@ if prompt:
     # FastAPI 호출
     with st.chat_message("assistant"):
         with st.spinner("답변 생성 중..."):
-            response = requests.post(API_URL, json={"question": prompt})
+            response = requests.post(API_URL, json={
+                "question": prompt,
+                "history" : st.session_state.messages
+            })
             result = response.json()
 
         st.write(result["answer"])

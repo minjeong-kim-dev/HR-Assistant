@@ -9,6 +9,7 @@ Modification History:
 - 2026-06-14 (김민정): 최초 작성.
 - 2026-06-15 (김민정): retriever 직접 호출 → LangGraph 그래프로 변경.
 - 2026-06-15 (김민정): LangGraph 연결, DB 저장 추가.
+- 2026-06-15 (김민정): 대화 히스토리 전달 추가.
 """
 
 from fastapi import APIRouter
@@ -24,6 +25,7 @@ graph = build_graph()
 
 class ChatRequest(BaseModel):
     question: str
+    history: list[dict] = []
 
 class ChatResponse(BaseModel):
     answer: str
@@ -33,7 +35,10 @@ class ChatResponse(BaseModel):
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
     # 질문 → router 판단 → RAG or LLM 선택
-    result = graph.invoke({"question": request.question})
+    result = graph.invoke({
+        "question": request.question,
+        "history" : request.history
+    })
 
     # DB에 대화 내역 저장
     db = SessionLocal()
