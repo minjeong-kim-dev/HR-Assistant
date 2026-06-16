@@ -95,6 +95,7 @@ def rag_node(state: GraphState) -> GraphState:
             아래 [참고 문서]에 있는 내용만을 사용하여 질문에 답하세요.
             반드시 문서에 명시된 내용만 답하고, 문서에 없는 내용은 절대 추가하지 마세요.
             질문이 모호하거나 "처음인데", "잘 모르는데" 같은 표현이 있으면 관련 내용을 순서대로 설명해주세요.
+            단, 문서에 답이 없을 경우 첫 줄에 반드시 "[문서무관]"을 표시하고, 일반 지식으로 답변하세요.
 
             [참고 문서]
             {context}
@@ -104,8 +105,14 @@ def rag_node(state: GraphState) -> GraphState:
     ]
     response = llm.invoke(messages)
 
-    logger.info(f"[RAG] sources={sources} | answer_len={len(response.content)}")
-    return {"answer": response.content, "sources": sources}
+    # [문서무관] 태그가 있으면 출처를 비움 (문서에 없는 질문이므로)
+    answer = response.content
+    if answer.startswith("[문서무관]"):
+        answer = answer.replace("[문서무관]", "").strip()
+        sources = []
+
+    logger.info(f"[RAG] sources={sources} | answer_len={len(answer)}")
+    return {"answer": answer, "sources": sources}
 
 
 def llm_node(state: GraphState) -> GraphState:

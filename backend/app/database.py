@@ -8,9 +8,11 @@ Description :
 
 Modification History:
 - 2026-06-15 (김민정): 최초 작성.
+- 2026-06-16 (김민정): Session 테이블 추가, ChatHistory에 session_id 컬럼 추가.
 """
 
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
+import uuid
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 
@@ -22,6 +24,17 @@ SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 
+class Session(Base):
+    """
+    대화 세션 테이블. 각 대화방 1개 = 세션 1개.
+    """
+    __tablename__ = "sessions"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    title = Column(String, nullable=False)               # 첫 질문을 제목으로 사용
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class ChatHistory(Base):
     """
     대화 히스토리 테이블.
@@ -29,13 +42,21 @@ class ChatHistory(Base):
     __tablename__ = "chat_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    question = Column(Text, nullable=False)             # 사용자 질문
-    answer = Column(Text, nullable=False)               # AI 답변
-    sources = Column(String, nullable=True)             # 출처 (콤마로 구분)
-    route = Column(String, nullable=True)               # rag or llm
-    created_at = Column(DateTime, default=datetime.now) # 저장 시각
+    session_id = Column(String, nullable=True)           # 어느 세션에 속하는지
+    question = Column(Text, nullable=False)              # 사용자 질문
+    answer = Column(Text, nullable=False)                # AI 답변
+    sources = Column(String, nullable=True)              # 출처 (콤마로 구분)
+    route = Column(String, nullable=True)                # rag or llm
+    created_at = Column(DateTime, default=datetime.now)  # 저장 시각
 
 
 def init_db():
-    """테이블이 없으면 생성."""
+    """테이블이 없으면 생성. 기존 테이블에 session_id 컬럼이 없으면 추가."""
     Base.metadata.create_all(bind=engine)
+    # 기존 chat_history 테이블에 session_id 컬럼이 없을 경우 추가 (SQLite는 ALTER TABLE만 가능)
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE chat_history ADD COLUMN session_id TEXT"))
+            conn.commit()
+        except Exception:
+            pass  # 이미 컬럼이 있으면 무시
