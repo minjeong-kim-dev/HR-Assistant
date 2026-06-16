@@ -143,15 +143,17 @@ RRF(Reciprocal Rank Fusion)는 두 검색 결과의 순위를 점수로 변환�
 
 ### 5.3. LangGraph 라우팅 구조
 
-```
-[사용자 질문]
-    │
-    ▼
-[router 노드]  HR 관련 여부 판단
-    │
-    ├── rag  →  [ChromaDB 검색] → [문서 기반 답변 + 출처]
-    │
-    └── llm  →  [LLM 직접 답변]
+![LangGraph 라우팅 구조](docs/image/LangGraph.png)
+
+**노드 간 공유 데이터 (GraphState)**
+
+```python
+class GraphState(TypedDict):
+    question : str        # 사용자 질문
+    history  : list[dict] # 이전 대화 내역
+    route    : str        # "rag" or "llm"
+    answer   : str        # 최종 답변
+    sources  : list[str]  # 출처 파일명 목록
 ```
 
 ---
