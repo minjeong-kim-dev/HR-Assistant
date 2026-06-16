@@ -13,7 +13,8 @@ Modification History:
 """
 
 import os
-from typing import TypedDict
+import json
+from typing import TypedDict, Generator
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
@@ -92,10 +93,15 @@ def rag_node(state: GraphState) -> GraphState:
 
     messages = [
         SystemMessage(content=f"""
-            아래 [참고 문서]에 있는 내용만을 사용하여 질문에 답하세요.
-            반드시 문서에 명시된 내용만 답하고, 문서에 없는 내용은 절대 추가하지 마세요.
-            질문이 모호하거나 "처음인데", "잘 모르는데" 같은 표현이 있으면 관련 내용을 순서대로 설명해주세요.
-            단, 문서에 답이 없을 경우 첫 줄에 반드시 "[문서무관]"을 표시하고, 일반 지식으로 답변하세요.
+            당신은 HR 규정 전문 AI 어시스턴트입니다.
+            아래 [참고 문서]를 확인하고 다음 규칙에 따라 답변하세요.
+
+            [규칙]
+            - [참고 문서]에 답이 있으면: 문서 내용을 바탕으로 정확하게 답변하세요.
+            - [참고 문서]에 답이 없으면: 첫 줄에 반드시 "[문서무관]"을 출력한 뒤, 일반적인 HR·노동법 지식으로 답변하세요.
+              예시) [문서무관]
+                    근로계약서는 근로기준법에 따라 반드시 서면으로 작성해야 합니다...
+            - 질문이 모호하면 관련 규정을 순서대로 설명해주세요.
 
             [참고 문서]
             {context}
@@ -137,6 +143,89 @@ def route_condition(state: GraphState) -> str:
     라우터 결과에 따라 다음 노드 결정.
     """
     return state["route"]
+
+
+def stream_answer(question: str, history: list[dict]) -> Generator:
+    """
+    라우팅 후 LLM 답변을 토큰 단위로 yield.
+    마지막에 메타데이터 dict {"answer", "sources", "route"} 를 yield.
+    """
+    # 1. 라우팅 (비스트리밍 - 빠른 분류)
+    router_result = router({"question": question, "history": history, "route": "", "answer": "", "sources": []})
+    route = router_result["route"]
+
+    # 2. 메시지 구성
+    history_messages = _build_history_messages(history)
+    if route == "rag":
+        chunks = search(question)
+        context = "\n\n".join([c["text"] for c in chunks])
+        sources = list(set([c["source"] for c in chunks]))
+        messages = [
+            SystemMessage(content=f"""
+                당신은 HR 규정 전문 AI 어시스턴트입니다.
+                아래 [참고 문서]를 확인하고 다음 규칙에 따라 답변하세요.
+
+                [규칙]
+                - [참고 문서]에 답이 있으면: 문서 내용을 바탕으로 정확하게 답변하세요.
+                - [참고 문서]에 답이 없으면: 첫 줄에 반드시 "[문서무관]"을 출력한 뒤, 일반적인 HR·노동법 지식으로 답변하세요.
+                  예시) [문서무관]
+                        근로계약서는 근로기준법에 따라 반드시 서면으로 작성해야 합니다...
+                - 질문이 모호하면 관련 규정을 순서대로 설명해주세요.
+
+                [참고 문서]
+                {context}
+            """),
+            *history_messages,
+            HumanMessage(content=question),
+        ]
+    else:
+        sources = []
+        messages = [
+            SystemMessage(content="당신은 친절한 HR 업무 도우미입니다."),
+            *history_messages,
+            HumanMessage(content=question),
+        ]
+
+    # 3. 토큰 스트리밍 + [문서무관] 처리
+    PREFIX = "[문서무관]"
+    buffer = ""
+    full_answer = ""
+    prefix_checked = False
+
+    for chunk in llm.stream(messages):
+        token = chunk.content
+        if not token:
+            continue
+        full_answer += token
+
+        if not prefix_checked:
+            buffer += token
+            if len(buffer) >= len(PREFIX):
+                prefix_checked = True
+                if buffer.startswith(PREFIX):
+                    sources = []
+                    rest = buffer[len(PREFIX):].lstrip()
+                    if rest:
+                        yield rest
+                else:
+                    yield buffer
+                buffer = ""
+        else:
+            yield token
+
+    # 버퍼에 남은 내용 처리 (답변이 PREFIX보다 짧은 경우)
+    if buffer:
+        if buffer.startswith(PREFIX):
+            sources = []
+        else:
+            yield buffer
+
+    if full_answer.startswith(PREFIX):
+        full_answer = full_answer[len(PREFIX):].strip()
+        sources = []
+
+    logger.info(f"[STREAM] route={route} | sources={sources} | answer_len={len(full_answer)}")
+    yield {"answer": full_answer, "sources": sources, "route": route}
 
 
 def build_graph():

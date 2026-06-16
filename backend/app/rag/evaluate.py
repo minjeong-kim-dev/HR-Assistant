@@ -11,6 +11,10 @@ Description :
     - answer_relevancy : 답변이 질문에 적절한가
     - context_precision: 검색된 청크가 질문에 관련 있는가
     - context_recall   : 정답에 필요한 내용이 검색됐는가
+
+Modification History:
+- 2026-06-15 (김민정): 최초 작성.
+- 2026-06-16 (김민정): SAMPLE_INDICES 추가 (카테고리별 대표 문항 20개 평가).
 """
 
 import json
@@ -20,13 +24,19 @@ from dotenv import load_dotenv
 from datasets import Dataset
 from ragas import evaluate
 from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+from ragas.embeddings import OpenAIEmbeddings as RagasOpenAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+import openai
 from backend.app.rag.retriever import search
 
 load_dotenv()
 
 DATASET_PATH = Path("data/ragas_dataset.json")
+
+# 카테고리별 대표 문항 인덱스 (50개 중 20개 선택)
+# 연차(4) + 육아휴직(4) + 연말정산(3) + 근로시간(4) + 출산휴가(2) + 일반HR(3)
+SAMPLE_INDICES = [0, 2, 5, 8, 10, 11, 15, 17, 20, 22, 26, 28, 29, 30, 34, 38, 39, 42, 44, 49]
 
 
 def build_ragas_dataset() -> Dataset:
@@ -38,6 +48,9 @@ def build_ragas_dataset() -> Dataset:
 
     with open(DATASET_PATH, encoding="utf-8") as f:
         raw = json.load(f)
+
+    # 대표 문항만 선택
+    raw = [raw[i] for i in SAMPLE_INDICES if i < len(raw)]
 
     questions, answers, contexts, ground_truths = [], [], [], []
 
@@ -78,9 +91,16 @@ def build_ragas_dataset() -> Dataset:
 
 
 def run_evaluation():
-    """RAGAS 평가 실행 후 점수 출력."""
+    """RAGAS 평가 실행 후 점수 출력 및 파일 저장."""
     print("데이터셋 준비 중...")
     dataset = build_ragas_dataset()
+
+    # answer_relevancy는 embed_query 메서드가 필요 → ragas 클래스에 없어서 래퍼 추가
+    openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    base_emb = RagasOpenAIEmbeddings(client=openai_client)
+    base_emb.embed_query = base_emb.embed_text          # 메서드명 호환 패치
+    base_emb.embed_documents = base_emb.embed_texts    # 메서드명 호환 패치
+    answer_relevancy.embeddings = base_emb
 
     print("\nRAGAS 평가 시작...")
     result = evaluate(
@@ -88,16 +108,33 @@ def run_evaluation():
         metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
     )
 
+    # 새 RAGAS 버전은 항목별 점수 리스트를 반환 → 평균 계산
+    df = result.to_pandas()
+    scores = {
+        "faithfulness": float(df["faithfulness"].mean()),
+        "answer_relevancy": float(df["answer_relevancy"].mean()),
+        "context_precision": float(df["context_precision"].mean()),
+        "context_recall": float(df["context_recall"].mean()),
+    }
+
     print("\n===== RAGAS 평가 결과 =====")
-    print(f"Faithfulness      (환각 억제): {result['faithfulness']:.4f}")
-    print(f"Answer Relevancy  (답변 관련성): {result['answer_relevancy']:.4f}")
-    print(f"Context Precision (검색 정밀도): {result['context_precision']:.4f}")
-    print(f"Context Recall    (검색 재현율): {result['context_recall']:.4f}")
+    print(f"Faithfulness      (환각 억제): {scores['faithfulness']:.4f}")
+    print(f"Answer Relevancy  (답변 관련성): {scores['answer_relevancy']:.4f}")
+    print(f"Context Precision (검색 정밀도): {scores['context_precision']:.4f}")
+    print(f"Context Recall    (검색 재현율): {scores['context_recall']:.4f}")
     print("===========================")
     print("* 0에 가까울수록 낮음, 1에 가까울수록 높음")
+
+    # 결과를 파일로 저장
+    result_path = Path("data/ragas_result.json")
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump(scores, f, ensure_ascii=False, indent=2)
+    print(f"\n결과 저장 완료: {result_path}")
 
     return result
 
 
 if __name__ == "__main__":
+    import warnings
+    warnings.filterwarnings("ignore")
     run_evaluation()

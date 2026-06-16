@@ -42,9 +42,60 @@
 
 ---
 
-## 3. 시스템 구현
+## 3. 기술 스택
 
-### 3.1. 문서 데이터
+| 분류 | 기술 스택 배지 |
+|---|---|
+| AI & LLM | ![OpenAI](https://img.shields.io/badge/OpenAI-412991?style=flat-square&logo=openai&logoColor=white) ![LangChain](https://img.shields.io/badge/LangChain-1C3C3C?style=flat-square&logo=langchain&logoColor=white) ![LangGraph](https://img.shields.io/badge/LangGraph-1C3C3C?style=flat-square&logo=langchain&logoColor=white) ![HuggingFace](https://img.shields.io/badge/HuggingFace-FFD21E?style=flat-square&logo=huggingface&logoColor=black) |
+| Backend & API | ![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white) ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white) ![Uvicorn](https://img.shields.io/badge/Uvicorn-2C974B?style=flat-square&logo=gunicorn&logoColor=white) |
+| Database & Infra | ![ChromaDB](https://img.shields.io/badge/ChromaDB-FF6B35?style=flat-square&logoColor=white) ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white) |
+| Frontend & Tools | ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat-square&logo=streamlit&logoColor=white) ![PyMuPDF](https://img.shields.io/badge/PyMuPDF-00A86B?style=flat-square&logoColor=white) ![EasyOCR](https://img.shields.io/badge/EasyOCR-4B8BBE?style=flat-square&logoColor=white) |
+
+---
+
+## 4. 시스템 아키텍처
+
+### 아키텍처 다이어그램
+
+![시스템 아키텍처](docs/image/시스템아케텍쳐.png)
+
+### ERD
+
+**SQLite** (`data/chat_history.db`) — 대화 히스토리 저장용
+
+```
+sessions
+├── id          TEXT  PK (UUID)
+├── title       TEXT           ← 첫 질문 30자
+└── created_at  DATETIME
+
+chat_history
+├── id          INTEGER  PK
+├── session_id  TEXT     FK → sessions.id
+├── question    TEXT
+├── answer      TEXT
+├── sources     TEXT     (콤마 구분, llm이면 빈 값)
+├── route       TEXT     (rag / llm)
+└── created_at  DATETIME
+```
+
+**ChromaDB** (`data/vector_store/`) — 문서 임베딩 저장용
+
+```
+hr_docs (컬렉션)
+├── id          TEXT     ← 청크 고유 ID (예: 연차휴가청구권_0)
+├── document    TEXT     ← 청크 원문 텍스트 (500자 단위)
+├── embedding   VECTOR   ← KR-SBERT 768차원 벡터
+└── metadata    JSON     ← {"source": "문서명.txt"}
+```
+
+> SQLite는 SQLAlchemy ORM으로 직접 설계·관리하고, ChromaDB는 라이브러리가 내부적으로 관리합니다. 두 DB가 역할이 달라 분리 운영합니다.
+
+---
+
+## 5. 시스템 구현
+
+### 5.1. 문서 데이터
 
 | 항목 | 내용 |
 |---|---|
@@ -56,7 +107,7 @@
 
 ---
 
-### 3.2. RAG 파이프라인
+### 5.2. RAG 파이프라인
 
 ```
 [PDF 문서]
@@ -71,12 +122,26 @@
 [KR-SBERT 임베딩]  텍스트 → 768차원 숫자 벡터로 변환
     │
     ▼
-[ChromaDB]  벡터 저장 + 유사도 검색
+[ChromaDB]  벡터 저장 + 유사도 검색 (Hybrid Search: BM25 + 벡터 RRF 결합)
 ```
+
+**Hybrid Search 도입 이유**
+
+초기에는 KR-SBERT 벡터 검색만 사용했으나, 숫자·키워드가 핵심인 질문에서 한계가 있었습니다.
+
+> 예) "연장근로 수당은 **50%** 붙나요?" → 벡터 검색은 의미 유사 청크를 찾지만, "50%"라는 정확한 수치가 있는 청크를 놓치는 경우 발생
+
+| 검색 방식 | 강점 | 약점 |
+|---|---|---|
+| 벡터 검색 (KR-SBERT) | 의미적으로 유사한 문장 검색 | 정확한 수치·키워드 매칭에 약함 |
+| BM25 (키워드) | "15일", "80%", "30일 전" 같은 정확한 단어 매칭에 강함 | 문맥·동의어 이해 불가 |
+| **Hybrid (RRF 결합)** | **두 방식의 장점을 모두 활용** | — |
+
+RRF(Reciprocal Rank Fusion)는 두 검색 결과의 순위를 점수로 변환해 합산하는 방식으로, 별도의 점수 정규화 없이 두 검색을 결합할 수 있어 선택했습니다.
 
 ---
 
-### 3.3. LangGraph 라우팅 구조
+### 5.3. LangGraph 라우팅 구조
 
 ```
 [사용자 질문]
@@ -91,100 +156,123 @@
 
 ---
 
-## 4. 주요 기능 및 결과
-
-### 4.1. 주요 기능
-
-- **문서 기반 Q&A**: 사내 규정 PDF에서 관련 내용 검색 후 출처 포함 답변
-- **일반 Q&A**: 문서와 무관한 질문은 LLM이 직접 답변
-- **자동 경로 분기**: 질문 유형에 따라 두 경로 자동 선택
-- **연속 대화**: 이전 맥락을 기억하며 대화 가능
-- **대화 기록 저장**: 모든 질문/답변/경로를 SQLite DB에 저장
-
----
-
-### 4.2. 시스템 아키텍처
-
-```
-[Streamlit UI]
-    │  질문 + 대화 히스토리 전달
-    ▼
-[FastAPI /chat 엔드포인트]
-    │
-    ├── [LangGraph]
-    │       ├── router → 경로 결정 (rag / llm)
-    │       ├── rag_node → ChromaDB 검색 + 답변 생성
-    │       └── llm_node → LLM 직접 답변
-    │
-    └── [SQLite] 대화 내역 저장
-```
-
----
-
-### 4.3. 디렉토리 구조
-
-```
-project01/
-├── backend/
-│   └── app/
-│       ├── rag/
-│       │   ├── parser.py       # PDF 텍스트 추출 (PyMuPDF + EasyOCR)
-│       │   ├── chunker.py      # 청크 분할
-│       │   ├── embedder.py     # 임베딩 + ChromaDB 저장
-│       │   └── retriever.py    # 유사도 검색
-│       ├── graph/
-│       │   └── graph.py        # LangGraph 라우팅 그래프
-│       ├── api/routes/
-│       │   └── chat.py         # /chat 엔드포인트
-│       ├── database.py         # SQLite 모델 + 연결
-│       ├── logger.py           # 로깅 설정
-│       └── main.py             # FastAPI 앱
-├── frontend/
-│   └── app.py                  # Streamlit UI
-├── data/
-│   ├── raw/                    # 원본 PDF (git 제외)
-│   ├── extracted/              # 추출된 텍스트
-│   ├── chunks/                 # 청크 JSON
-│   └── vector_store/           # ChromaDB (git 제외)
-├── logs/                       # 실행 로그 (git 제외)
-└── dev_log.md                  # 개발 학습 일지
-```
-
----
-
-### 4.4. RAG 품질 평가 (RAGAS)
-
-RAG 파이프라인이 실제로 잘 작동하는지 RAGAS 프레임워크로 정량 평가했습니다.
-
-> **RAGAS**: 질문 → RAG 실행 → 답변/출처를 자동으로 수집하고, 4가지 지표로 품질을 0~1 사이 점수로 측정하는 평가 프레임워크
-
-**평가 데이터셋**: 연차휴가·육아휴직·연말정산·근로시간 관련 Q&A 16개 (`data/ragas_dataset.json`)
-
-| 지표 | 점수 | 의미 |
-|---|---|---|
-| Context Precision | **0.97** | 검색된 청크가 질문에 관련 있는가 → 검색 품질 우수 |
-| Context Recall | **0.47** | 정답에 필요한 내용이 청크에 포함됐는가 → 청크 수 한계 |
-| Faithfulness | **0.34** | 답변이 문서 내용에만 근거하는가 → 프롬프트 강화 후 개선 |
-| Answer Relevancy | 측정 불가 | RAGAS의 한국어 처리 한계로 수치 왜곡 |
-
-**개선 과정**: 프롬프트를 "문서에 없는 내용은 답하지 마세요" → "반드시 문서에 명시된 내용만 답하고 절대 추가하지 마세요"로 강화 후 Faithfulness 0.24 → 0.34 향상
-
----
-
-### 4.5. 실행 모니터링 (LangSmith)
+### 5.4. 실행 모니터링 (LangSmith)
 
 LangSmith를 연동해 LangGraph 실행 흐름을 실시간으로 추적합니다.
-
-> **LangSmith**: LangChain/LangGraph 실행 흐름을 웹 대시보드에서 시각화하는 모니터링 도구. `.env`에 환경변수 2줄 추가만으로 자동 연동.
 
 **확인 가능한 정보**
 - 질문이 `router → rag_node` 또는 `router → llm_node` 중 어디로 갔는지
 - 각 노드의 입력/출력 내용 및 대화 히스토리 전달 여부
 - 노드별 처리 시간 및 질문당 API 비용
 
+
+**Input** (질문 + 히스토리 전달)
+
+![LangSmith Input](docs/image/LangSmith_input.png)
+
+**Output** (답변 + 경로 + 출처)
+
+![LangSmith Output](docs/image/LangSmith_output.png)
+
 ---
 
-## 5. 설치 및 실행
+## 6. 주요 기능
+
+- **문서 기반 Q&A**: 사내 규정 PDF에서 관련 내용 검색 후 출처 포함 답변
+- **일반 Q&A**: 문서와 무관한 질문은 LLM이 직접 답변
+- **자동 경로 분기**: 질문 유형에 따라 두 경로 자동 선택
+- **연속 대화**: 이전 맥락을 기억하며 대화 가능
+- **대화 기록 저장**: 모든 질문/답변/경로를 SQLite DB에 저장
+- **멀티 대화 관리**: 사이드바에서 대화방 생성·전환·삭제 (삭제 시 DB에서도 제거)
+
+### 디렉토리 구조
+
+```
+project01/
+├── backend/
+│   └── app/
+│       ├── rag/
+│       │   ├── parser.py           # PDF 텍스트 추출 (PyMuPDF + EasyOCR)
+│       │   ├── chunker.py          # 청크 분할
+│       │   ├── embedder.py         # 임베딩 + ChromaDB 저장
+│       │   └── retriever.py        # Hybrid Search (BM25 + 벡터 RRF)
+│       ├── graph/
+│       │   └── graph.py            # LangGraph 라우팅 그래프
+│       ├── api/routes/
+│       │   └── chat.py             # /chat, /sessions 엔드포인트 (HTTP 레이어)
+│       ├── services/
+│       │   └── chat_service.py     # 비즈니스 로직 (LangGraph 호출, DB 저장)
+│       ├── database.py             # SQLite 모델 + 연결
+│       ├── logger.py               # 로깅 설정
+│       └── main.py                 # FastAPI 앱
+├── frontend/
+│   └── app.py                      # Streamlit UI
+├── data/
+│   ├── raw/                        # 원본 PDF (git 제외)
+│   ├── extracted/                  # 추출된 텍스트
+│   ├── chunks/                     # 청크 JSON
+│   └── vector_store/               # ChromaDB (git 제외)
+├── logs/                           # 실행 로그 (git 제외)
+├── requirements.txt
+└── dev_log.md                      # 개발 학습 일지
+```
+
+---
+
+## 7. 시연 영상
+
+<video src="docs/image/시연 영상.mp4" controls width="100%"></video>
+
+---
+
+## 8. 테스트 결과
+
+### E2E 테스트
+
+| 질문 | 예상 경로 | 실제 경로 | 결과 |
+|---|---|---|---|
+| 1년 미만 근로자도 연차휴가를 받을 수 있나요? | rag | rag | 문서 기반 답변 + 출처 ✅ |
+| 육아휴직 기간은 얼마나 되나요? | rag | rag | 문서 기반 답변 + 출처 ✅ |
+| 연차 쓸 때 팀장한테 몇 일 전에 얘기해야 해? | llm | llm | 일반 지식 답변, 출처 없음 ✅ |
+| 퇴직금은 얼마예요? | llm | llm | 일반 지식 답변 ✅ |
+| 오늘 날씨 어때요? | llm | llm | 실시간 정보 없다고 안내 ✅ |
+
+---
+
+### RAG 품질 평가 (RAGAS)
+
+Q&A 데이터셋 기준 (연차휴가·육아휴직·연말정산·근로시간·일반 HR 혼합)
+
+| 지표 | 1차 (기본) | 2차 (프롬프트 강화) | 3차 (Hybrid Search) | 해석 |
+|---|---|---|---|---|
+| Faithfulness | 0.24 | 0.34 | **0.65** | 환각 억제 지속 개선 ✅ |
+| Context Recall | 0.47 | 0.45 | **0.58** | Hybrid Search로 포괄 범위 확대 ✅ |
+| Context Precision | 0.96 | 0.97 | 0.55 | 일반 HR 질문 추가로 희석 |
+| Answer Relevancy | 측정 불가 | 측정 불가 | 측정 불가 | 아래 참고 |
+
+> **핵심**: Faithfulness 0.24 → 0.65로 170% 향상. 프롬프트 강화 + Hybrid Search(BM25+벡터 RRF)의 복합 효과.
+
+**Answer Relevancy 측정 불가 사유**
+
+Answer Relevancy는 "이 답변은 어떤 질문에 대한 답인가?"를 LLM이 역질문 3개로 생성하고, 원래 질문과 임베딩 유사도를 비교하는 방식으로 동작합니다.
+
+측정 실패 원인은 두 가지입니다.
+1. **모델 호환 문제**: RAGAS가 내부적으로 사용하는 역질문 생성 프롬프트가 `gpt-3.5-turbo` / `gpt-4` 기준으로 설계되어, `gpt-4o-mini`에서는 3개 대신 1개만 반환되어 계산이 NaN 처리됨
+2. **라이브러리 버전 불일치**: 사용 중인 RAGAS 버전에서 임베딩 API 인터페이스가 변경되어 내부 호환 오류 발생
+
+**대안 검토 및 결론**
+
+| 대안 | 검토 결과 |
+|---|---|
+| `gpt-4o`로 교체 | 역질문 생성 품질은 개선되나 평가 1회당 비용이 약 10배 증가 |
+| `gpt-3.5-turbo`로 교체 | RAGAS 원설계 모델이라 호환 가능성 높으나, 프로젝트 전체가 `gpt-4o-mini` 기반이라 평가 환경 불일치 발생 |
+| RAGAS 구버전(0.1.x) 다운그레이드 | 다른 3개 지표 측정 방식까지 변경되어 기존 결과와 비교 불가 |
+
+핵심 지표인 **Faithfulness**(환각 억제)와 **Context Precision/Recall**(검색 품질)로 RAG 성능을 충분히 평가할 수 있다고 판단하여 Answer Relevancy는 제외했습니다.
+
+---
+
+## 9. 설치 및 실행
 
 ### 환경 설정
 
@@ -196,7 +284,7 @@ pip install -r requirements.txt
 
 ### 환경 변수 설정
 
-`.env` 파일 생성:
+`backend/.env` 파일 생성:
 
 ```
 OPENAI_API_KEY=your_api_key
@@ -223,89 +311,37 @@ streamlit run frontend/app.py
 
 ---
 
-## 6. 트러블슈팅
+## 10. 트러블슈팅
 
-### 1. Docling OOM → PyMuPDF로 전환
-- **문제**: PDF 변환 라이브러리 Docling 사용 시 OOM(메모리 부족) 에러
-- **원인**: Docling 내부 AI 모델(TableFormer, RT-DETR v2)이 RAM 과다 사용
-- **해결**: PyMuPDF `get_text()`로 텍스트 직접 추출로 전환
-- **결과**: 메모리 문제 해결, 처리 속도 수 분 → 수 초
+### 1. RAG 프롬프트 모순으로 인한 일반 지식 답변 누락
+- **현상**: 문서에 없는 HR 질문(예: "근로계약서를 반드시 써야 하나요?")에  "문서에 없는 내용은 답변할 수 없습니다"만 반환
+- **원인**: 
+    - 프롬프트 내 `"[문서무관] 후 일반 지식으로 답변하세요"`와 `"절대 추가하지 마세요"` 지시가 충돌.
+    - LLM이 더 강한 어조의 금지 지시를 우선 적용
+- **해결**: 프롬프트를 명확한 if-else 구조로 재작성 + 출력 예시 추가
+```
+- [참고 문서]에 답이 있으면: 문서 내용을 바탕으로 정확하게 답변하세요.
+- [참고 문서]에 답이 없으면: 첫 줄에 반드시 "[문서무관]"을 출력한 뒤 일반 지식으로 답변하세요.
+```
+- **결과**: 문서 외 HR 질문에 일반 지식 답변 정상 반환, 출처 미표시 처리
 
-### 2. 한글 PDF 인코딩 깨짐 → EasyOCR fallback
-- **문제**: 일부 PDF 텍스트 추출 시 한글이 아랍/키릴 문자로 깨짐
-- **원인**: PDF 폰트에 ToUnicode 테이블이 없어 PyMuPDF가 문자 디코딩 실패
-- **해결**: 한글 음절(가~힣) 비율로 깨짐 자동 감지 → EasyOCR로 재추출
-- **결과**: 11개 중 2개 OCR 처리, 전체 텍스트 정상 추출
-
-### 3. ChromaDB 벡터 차원 불일치
-- **문제**: `Collection expecting dimension 768, got 384` 에러
-- **원인**: `query_texts` 사용 시 ChromaDB 내장 모델(384차원)이 임베딩 → 저장 시 모델(768차원)과 불일치
-- **해결**: `query_embeddings` 사용 — 질문도 KR-SBERT로 직접 임베딩해서 전달
-- **결과**: 동일 모델로 저장/검색하여 차원 일치, 검색 정상 동작
-
-### 4. LangChain 메시지 리스트 중첩 에러
-- **문제**: `NotImplementedError: Message as a sequence must be (role string, template)`
-- **원인**: `messages` 리스트 안에 `history_messages` 리스트를 통째로 삽입 → 리스트 안에 리스트 중첩
-- **해결**: `*history_messages`로 언패킹하여 개별 항목으로 삽입
-- **결과**: 대화 히스토리 정상 전달, 맥락 유지
-
-### 5. RAG의 개요 질문 한계
-- **문제**: "전체적으로 알려줘" 같은 개요 요청 시 RAG 답변보다 LLM 직접 답변이 더 풍부함
-- **원인**: RAG는 유사도 검색으로 찾은 청크 3개만 참고 → 전체 개요 설명에 컨텍스트 부족
-- **현재**: 특정 사실 질문 → RAG 유리 / 개요 설명 → LLM 유리 (알려진 한계)
-- **개선 방향**: 질문 유형(사실 vs 개요)을 추가로 분류하거나 검색 청크 수 증가 고려
+### 2. RAGAS Answer Relevancy 측정 불가
+- **현상**: RAGAS 평가 실행 후 `answer_relevancy`만 NaN으로 출력됨
+- **원인**: Answer Relevancy는 LLM에게 "이 답변은 어떤 질문에 대한 답인가?"를 역질문 3개로 생성하게 한 뒤, 원래 질문과 유사도를 비교하는 방식으로 동작함. 그런데 이 역질문 생성 프롬프트가 `gpt-3.5-turbo` / `gpt-4` 기준으로 설계되어 있어, 프로젝트에서 사용 중인 `gpt-4o-mini`에서는 3개 대신 1개만 반환됨 → 유사도 계산 불가 → NaN
+- **대안 검토**:
+    - `gpt-4o`로 교체 → 평가 비용 약 10배 증가로 기각
+    - `gpt-3.5-turbo`로 교체 → 프로젝트 전체가 `gpt-4o-mini` 기반이라 평가 환경 불일치
+- **결론**: Answer Relevancy를 제외한 나머지 3개 지표(Faithfulness, Context Precision, Context Recall)로 RAG 품질 판단
 
 ---
 
-## 7. 결론 및 향후 개선 방향
+## 11. 결론 및 향후 개선 방향
 
 본 프로젝트는 사내 규정 문서를 PDF 형태로 보유하고 있지만 활용이 어려운 기업 환경에서, 직원이 자연어로 질문하면 관련 규정을 즉시 찾아 출처와 함께 답변하는 AI 어시스턴트를 구현했습니다.
 
 **향후 개선 방향**
 - 실제 기업 사내 문서(출장 경비, 복지 규정 등)로 확장
-- 청크 수 증가 또는 질문 유형 분류 추가로 개요 질문 답변 품질 개선
-- 답변 정확도 평가 지표(RAGAS 등) 도입
-
----
-
-## 8. 기술 선택 이유
-
-### RAG를 선택한 이유
-순수 LLM만 사용하면 학습 데이터에 없는 사내 규정은 답할 수 없고, 출처도 제시할 수 없습니다. RAG는 문서를 직접 검색해서 답하기 때문에 **출처 표시**가 가능하고 **환각(Hallucination)을 줄일 수 있습니다**.
-
-### LangGraph를 선택한 이유
-문서 관련 질문과 일반 질문을 하나의 체인으로 처리하면 모든 질문에 RAG 검색을 실행하게 됩니다. LangGraph는 **조건부 분기**를 그래프 구조로 명확하게 표현할 수 있어, 질문 유형에 따라 다른 경로를 실행하는 라우팅 로직을 구현하기 적합했습니다.
-
-### KR-SBERT를 선택한 이유
-일반 영어 임베딩 모델은 한국어 문서에서 유사도 검색 정확도가 낮습니다. KR-SBERT는 **한국어 NLI(자연어 추론) 데이터로 파인튜닝된 모델**로, 한국어 문서 검색에 더 적합합니다.
-
-### ChromaDB를 선택한 이유
-Pinecone 등 클라우드 벡터 DB는 API 키와 네트워크가 필요합니다. ChromaDB는 **로컬 파일로 동작**해 별도 서버 없이 사용할 수 있고, 포트폴리오 데모 환경에서 가장 간단하게 실행할 수 있습니다.
-
-### PyMuPDF + EasyOCR 조합을 선택한 이유
-처음에는 Docling을 사용했지만 내부 AI 모델이 메모리를 과도하게 사용해 OOM 에러가 발생했습니다. PyMuPDF는 가볍고 빠르지만 일부 PDF에서 한글 인코딩이 깨지는 문제가 있어, **깨진 PDF만 EasyOCR로 fallback 처리**하는 방식으로 두 라이브러리를 조합했습니다.
-
-### gpt-4o-mini를 선택한 이유
-gpt-4o 대비 **비용이 약 15배 저렴**하면서도 라우팅 판단과 문서 기반 답변 생성에는 충분한 성능을 제공합니다. 포트폴리오 개발 중 반복 테스트 비용을 최소화하기 위해 선택했습니다.
-
-### FastAPI를 선택한 이유
-Flask보다 **비동기 처리**와 **자동 API 문서(Swagger)** 생성을 기본으로 지원합니다. LangGraph 같은 AI 파이프라인은 처리 시간이 길기 때문에 비동기 지원이 중요했습니다.
-
-### SQLite를 선택한 이유
-대화 히스토리 저장에 별도의 DB 서버가 필요하지 않습니다. SQLite는 **파일 기반 DB**로 설치 없이 바로 사용할 수 있어 포트폴리오 환경에 적합하며, SQLAlchemy ORM을 통해 추후 PostgreSQL 등으로 교체도 용이합니다.
-
----
-
-## 9. 기술 스택
-
-| 분류 | 기술 |
-|---|---|
-| Language | Python 3.11 |
-| Agent Framework | LangChain, LangGraph |
-| LLM | gpt-4o-mini |
-| Embedding | KR-SBERT (snunlp/KR-SBERT-V40K-klueNLI-augSTS) |
-| Vector DB | ChromaDB |
-| PDF 파싱 | PyMuPDF, EasyOCR |
-| API Server | FastAPI |
-| DB | SQLite + SQLAlchemy |
-| UI | Streamlit |
+- 질문 유형(사실 질문 vs 개요 요청) 추가 분류로 개요 답변 품질 개선
+- 답변 스트리밍 적용으로 체감 응답 속도 개선
+- 사용자 인증(로그인) 도입 → 사용자별 session 분리 관리 (현재는 단일 사용자 기준)
+- 사용자 피드백(좋아요/싫어요) 수집 → 답변 품질 개선 데이터로 활용
