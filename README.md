@@ -223,7 +223,7 @@ project01/
 
 ## 7. 시연 영상
 
-<video src="docs/image/시연영상.mp4" controls width="100%"></video>
+![시연 영상](docs/image/시연영상.gif)
 
 ---
 
