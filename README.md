@@ -223,7 +223,7 @@ project01/
 
 ## 7. 시연 영상
 
-![시연 영상](docs/image/시연영상.gif)
+<video src="https://github.com/user-attachments/assets/e2949c44-c3eb-40d0-aa34-763e5f6ebe7d" controls width="100%"></video>
 
 ---
 
