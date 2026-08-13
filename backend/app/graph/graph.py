@@ -10,10 +10,10 @@ Modification History:
 - 2026-06-15 (김민정): 최초 작성.
 - 2026-06-15 (김민정): 대화 히스토리 전달 추가.
 - 2026-06-15 (김민정): 중복 히스토리 변환 코드 _build_history_messages() 함수로 분리.
+- 2026-07-06 (김민정): RAG/LLM 메시지 생성 로직을 공통 함수(_build_rag_messages(), _build_llm_messages())로 분리하여 중복 코드 제거.
 """
 
 import os
-import json
 from typing import TypedDict, Generator
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
@@ -46,11 +46,52 @@ def _build_history_messages(history: list[dict]) -> list:
             messages.append(SystemMessage(content=msg["content"]))
     return messages
 
+def _build_rag_messages(question: str, history: list[dict]):
+    """
+    RAG용 메시지와 출처를 생성.
+    rag_node(), stream_answer()에서 공통으로 사용한다.
+    """
+    chunks = search(question)
+    context = "\n\n".join([c["text"] for c in chunks])
+    sources = list(set([c["source"] for c in chunks]))
+
+    history_messages = _build_history_messages(history)
+
+    messages = [
+        SystemMessage(content=f"""
+            당신은 HR 규정 전문 AI 어시스턴트입니다.
+            아래 [참고 문서]를 확인하고 다음 규칙에 따라 답변하세요.
+
+            [규칙]
+            - [참고 문서]에 답이 있으면: 문서 내용을 바탕으로 정확하게 답변하세요.
+            - [참고 문서]에 답이 없으면: 첫 줄에 반드시 "[문서무관]"을 출력한 뒤, 일반적인 HR·노동법 지식으로 답변하세요.
+
+            예시)
+            [문서무관]
+            근로계약서는 근로기준법에 따라 반드시 서면으로 작성해야 합니다...
+
+            - 질문이 모호하면 관련 규정을 순서대로 설명해주세요.
+
+            [참고 문서]
+            {context}
+        """),
+        *history_messages,
+        HumanMessage(content=question),
+    ]
+
+    return messages, sources
+
+def _build_llm_messages(question: str, history: list[dict]):
+    history_messages = _build_history_messages(history)
+
+    return [
+        SystemMessage(content="당신은 친절한 HR 업무 도우미입니다."),
+        *history_messages,
+        HumanMessage(content=question),
+    ]
 
 def router(state: GraphState) -> GraphState:
-    """
-    사용자의 질문을 보고 'rag' 또는 'llm' 경로를 결정.
-    """
+    """사용자의 질문을 보고 'rag' 또는 'llm' 경로를 결정."""
     history_messages = _build_history_messages(state.get("history", []))
 
     messages = [
@@ -79,71 +120,43 @@ def router(state: GraphState) -> GraphState:
     logger.info(f"[ROUTER] route={route} | question={state['question'][:50]}")
     return {"route": route}
 
+def route_condition(state: GraphState) -> str:
+    """라우터 결과에 따라 다음 노드 결정."""
+    return state["route"]
 
 def rag_node(state: GraphState) -> GraphState:
-    """
-    문서에서 관련 청크를 검색하고 LLM으로 답변 생성.
-    """
+    """문서에서 관련 청크를 검색하고 LLM으로 답변 생성."""
+    messages, sources = _build_rag_messages(
+        state["question"],
+        state.get("history", [])
+    )
 
-    chunks = search(state["question"])
-    context = "\n\n".join([c["text"] for c in chunks])
-    sources = list(set([c["source"] for c in chunks]))
-
-    history_messages = _build_history_messages(state.get("history", []))
-
-    messages = [
-        SystemMessage(content=f"""
-            당신은 HR 규정 전문 AI 어시스턴트입니다.
-            아래 [참고 문서]를 확인하고 다음 규칙에 따라 답변하세요.
-
-            [규칙]
-            - [참고 문서]에 답이 있으면: 문서 내용을 바탕으로 정확하게 답변하세요.
-            - [참고 문서]에 답이 없으면: 첫 줄에 반드시 "[문서무관]"을 출력한 뒤, 일반적인 HR·노동법 지식으로 답변하세요.
-              예시) [문서무관]
-                    근로계약서는 근로기준법에 따라 반드시 서면으로 작성해야 합니다...
-            - 질문이 모호하면 관련 규정을 순서대로 설명해주세요.
-
-            [참고 문서]
-            {context}
-        """),
-        *history_messages,
-        HumanMessage(content=state["question"]),
-    ]
     response = llm.invoke(messages)
-
-    # [문서무관] 태그가 있으면 출처를 비움 (문서에 없는 질문이므로)
     answer = response.content
+
     if answer.startswith("[문서무관]"):
         answer = answer.replace("[문서무관]", "").strip()
         sources = []
 
     logger.info(f"[RAG] sources={sources} | answer_len={len(answer)}")
+    
     return {"answer": answer, "sources": sources}
 
 
 def llm_node(state: GraphState) -> GraphState:
-    """
-    문서 없이 LLM이 직접 답변.
-    """
-    history_messages = _build_history_messages(state.get("history", []))
+    """문서 없이 LLM이 직접 답변."""
+    messages = _build_llm_messages(
+        state["question"],
+        state.get("history", [])
+    )
 
-    messages = [
-        SystemMessage(content="당신은 친절한 HR 업무 도우미입니다."),
-        *history_messages,
-        HumanMessage(content=state["question"]),
-    ]
     response = llm.invoke(messages)
-
     logger.info(f"[LLM] answer_len={len(response.content)}")
-    return {"answer": response.content, "sources": []}
 
-
-def route_condition(state: GraphState) -> str:
-    """
-    라우터 결과에 따라 다음 노드 결정.
-    """
-    return state["route"]
-
+    return {
+        "answer": response.content,
+        "sources": []
+    }
 
 def stream_answer(question: str, history: list[dict]) -> Generator:
     """
@@ -155,36 +168,11 @@ def stream_answer(question: str, history: list[dict]) -> Generator:
     route = router_result["route"]
 
     # 2. 메시지 구성
-    history_messages = _build_history_messages(history)
     if route == "rag":
-        chunks = search(question)
-        context = "\n\n".join([c["text"] for c in chunks])
-        sources = list(set([c["source"] for c in chunks]))
-        messages = [
-            SystemMessage(content=f"""
-                당신은 HR 규정 전문 AI 어시스턴트입니다.
-                아래 [참고 문서]를 확인하고 다음 규칙에 따라 답변하세요.
-
-                [규칙]
-                - [참고 문서]에 답이 있으면: 문서 내용을 바탕으로 정확하게 답변하세요.
-                - [참고 문서]에 답이 없으면: 첫 줄에 반드시 "[문서무관]"을 출력한 뒤, 일반적인 HR·노동법 지식으로 답변하세요.
-                  예시) [문서무관]
-                        근로계약서는 근로기준법에 따라 반드시 서면으로 작성해야 합니다...
-                - 질문이 모호하면 관련 규정을 순서대로 설명해주세요.
-
-                [참고 문서]
-                {context}
-            """),
-            *history_messages,
-            HumanMessage(content=question),
-        ]
+        messages, sources = _build_rag_messages(question, history)
     else:
+        messages = _build_llm_messages(question, history)
         sources = []
-        messages = [
-            SystemMessage(content="당신은 친절한 HR 업무 도우미입니다."),
-            *history_messages,
-            HumanMessage(content=question),
-        ]
 
     # 3. 토큰 스트리밍 + [문서무관] 처리
     PREFIX = "[문서무관]"
@@ -229,9 +217,7 @@ def stream_answer(question: str, history: list[dict]) -> Generator:
 
 
 def build_graph():
-    """
-    LangGraph 그래프 생성.
-    """
+    """LangGraph 그래프 생성."""
     graph = StateGraph(GraphState)
 
     graph.add_node("router", router)
